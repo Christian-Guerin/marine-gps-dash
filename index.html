@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ESP32 GPS Bridge</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; background: #000; color: #fff; text-align: center; padding: 30px 15px; }
+    .card { background: #1c1c1e; padding: 25px; border-radius: 16px; margin: 20px auto; max-width: 350px; }
+    button { font-size: 1.1rem; font-weight: 600; padding: 16px 32px; border-radius: 12px; border: none; background: #0a84ff; color: #fff; cursor: pointer; width: 100%; }
+    #status { margin-top: 15px; font-weight: 500; color: #30d158; }
+    #data { margin-top: 15px; color: #8e8e93; font-size: 0.95rem; }
+  </style>
+</head>
+<body>
+  <h2>Marine GPS Bridge</h2>
+  <div class="card">
+    <button id="connectBtn">Connect Dashboard</button>
+    <div id="status">Status: Disconnected</div>
+    <div id="data">-- KTS | --°</div>
+  </div>
+
+  <script>
+    const SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+    const RX_UUID      = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
+    let rxChar = null;
+
+    document.getElementById('connectBtn').addEventListener('click', async () => {
+      try {
+        document.getElementById('status').innerText = "Status: Searching...";
+        const device = await navigator.bluetooth.requestDevice({
+          filters: [{ name: 'ESP32-GPS-Dash' }],
+          optionalServices: [SERVICE_UUID]
+        });
+
+        const server = await device.gatt.connect();
+        const service = await server.getPrimaryService(SERVICE_UUID);
+        rxChar = await service.getCharacteristic(RX_UUID);
+
+        document.getElementById('status').innerText = "Status: Connected!";
+        startGeolocation();
+      } catch (err) {
+        document.getElementById('status').innerText = "Error: " + err.message;
+      }
+    });
+
+    function startGeolocation() {
+      if (!navigator.geolocation) return;
+      navigator.geolocation.watchPosition(pos => {
+        const coords = pos.coords;
+        const speedKts = (coords.speed || 0) * 1.94384;
+        const heading = coords.heading || 0;
+        
+        const nmea = buildGPRMC(coords.latitude, coords.longitude, speedKts, heading, pos.timestamp);
+        
+        document.getElementById('data').innerText = `${speedKts.toFixed(1)} KTS | ${heading.toFixed(0)}°`;
+
+        if (rxChar) {
+          const encoder = new TextEncoder();
+          rxChar.writeValueWithoutResponse(encoder.encode(nmea));
+        }
+      }, err => console.error(err), { enableHighAccuracy: true, maximumAge: 0 });
+    }
+
+    function buildGPRMC(lat, lon, speedKts, heading, timeMs) {
+      const d = new Date(timeMs);
+      const timeStr = d.getUTCHours().toString().padStart(2,'0') +
+                      d.getUTCMinutes().toString().padStart(2,'0') +
+                      d.getUTCSeconds().toString().padStart(2,'0') + ".00";
+      const dateStr = d.getUTCDate().toString().padStart(2,'0') +
+                      (d.getUTCMonth()+1).toString().padStart(2,'0') +
+                      d.getUTCFullYear().toString().slice(-2);
+
+      const latDeg = Math.floor(Math.abs(lat));
+      const latMin = ((Math.abs(lat) - latDeg) * 60).toFixed(4).padStart(7,'0');
+      const latCard = lat >= 0 ? 'N' : 'S';
+
+      const lonDeg = Math.floor(Math.abs(lon));
+      const lonMin = ((Math.abs(lon) - lonDeg) * 60).toFixed(4).padStart(7,'0');
+      const lonCard = lon >= 0 ? 'E' : 'W';
+
+      const raw = `GPRMC,${timeStr},A,${latDeg.toString().padStart(2,'0')}${latMin},${latCard},${lonDeg.toString().padStart(3,'0')}${lonMin},${lonCard},${speedKts.toFixed(1)},${heading.toFixed(1)},${dateStr},,,A`;
+      
+      let checksum = 0;
+      for (let i = 0; i < raw.length; i++) checksum ^= raw.charCodeAt(i);
+      return `$${raw}*${checksum.toString(16).toUpperCase().padStart(2,'0')}\r\n`;
+    }
+  </script>
+</body>
+</html>
