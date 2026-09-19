@@ -31,6 +31,8 @@
     const RX_UUID      = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
     let rxChar = null;
     let magneticHeading = 0;
+    let lastPositionTime = Date.now();
+    let lastLat = 0, lastLon = 0;
 
     function initCompass() {
       if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
@@ -69,6 +71,7 @@
 
         document.getElementById('status').innerText = "Status: Connected!";
         startGeolocation();
+        startWatchdog();
       } catch (err) {
         document.getElementById('status').innerText = "Error: " + err.message;
       }
@@ -78,21 +81,38 @@
       if (!navigator.geolocation) return;
       navigator.geolocation.watchPosition(pos => {
         const coords = pos.coords;
-        const speedKts = (coords.speed || 0) * 1.94384;
+        lastLat = coords.latitude;
+        lastLon = coords.longitude;
+        lastPositionTime = Date.now();
+
+        const rawSpeed = (coords.speed !== null && !isNaN(coords.speed) && coords.speed > 0) ? coords.speed : 0;
+        const speedKts = rawSpeed * 1.94384;
         
         let effectiveHeading = magneticHeading;
         if (speedKts > 1.0 && coords.heading !== null && !isNaN(coords.heading)) {
           effectiveHeading = coords.heading;
         }
 
-        const nmea = buildGPRMC(coords.latitude, coords.longitude, speedKts, effectiveHeading, pos.timestamp);
-        document.getElementById('data').innerText = `${speedKts.toFixed(1)} KTS | ${effectiveHeading.toFixed(0)}°`;
-
-        if (rxChar) {
-          const encoder = new TextEncoder();
-          rxChar.writeValueWithoutResponse(encoder.encode(nmea));
-        }
+        sendTelemetry(lastLat, lastLon, speedKts, effectiveHeading, pos.timestamp);
       }, err => console.error(err), { enableHighAccuracy: true, maximumAge: 0 });
+    }
+
+    // Watchdog: If iOS stops sending position updates for > 2 seconds, force speed to 0.0 KTS
+    function startWatchdog() {
+      setInterval(() => {
+        if (Date.now() - lastPositionTime > 2000 && rxChar) {
+          sendTelemetry(lastLat, lastLon, 0.0, magneticHeading, Date.now());
+        }
+      }, 1000);
+    }
+
+    function sendTelemetry(lat, lon, speedKts, heading, timeMs) {
+      document.getElementById('data').innerText = `${speedKts.toFixed(1)} KTS | ${heading.toFixed(0)}°`;
+      if (rxChar) {
+        const nmea = buildGPRMC(lat, lon, speedKts, heading, timeMs);
+        const encoder = new TextEncoder();
+        rxChar.writeValueWithoutResponse(encoder.encode(nmea));
+      }
     }
 
     function buildGPRMC(lat, lon, speedKts, heading, timeMs) {
