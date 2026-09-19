@@ -3,6 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>ESP32 GPS Bridge</title>
   <style>
     body { font-family: -apple-system, sans-serif; background: #000; color: #fff; text-align: center; padding: 30px 15px; }
@@ -21,12 +23,40 @@
   </div>
 
   <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('./sw.js').catch(err => console.log('SW registration failed:', err));
+    }
+
     const SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
     const RX_UUID      = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
     let rxChar = null;
+    let magneticHeading = 0;
+
+    function initCompass() {
+      if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        DeviceOrientationEvent.requestPermission()
+          .then(response => {
+            if (response === 'granted') {
+              window.addEventListener('deviceorientation', handleOrientation, true);
+            }
+          })
+          .catch(console.error);
+      } else {
+        window.addEventListener('deviceorientation', handleOrientation, true);
+      }
+    }
+
+    function handleOrientation(event) {
+      if (event.webkitCompassHeading) {
+        magneticHeading = event.webkitCompassHeading;
+      } else if (event.alpha) {
+        magneticHeading = (360 - event.alpha) % 360;
+      }
+    }
 
     document.getElementById('connectBtn').addEventListener('click', async () => {
       try {
+        initCompass();
         document.getElementById('status').innerText = "Status: Searching...";
         const device = await navigator.bluetooth.requestDevice({
           filters: [{ name: 'ESP32-GPS-Dash' }],
@@ -49,11 +79,14 @@
       navigator.geolocation.watchPosition(pos => {
         const coords = pos.coords;
         const speedKts = (coords.speed || 0) * 1.94384;
-        const heading = coords.heading || 0;
         
-        const nmea = buildGPRMC(coords.latitude, coords.longitude, speedKts, heading, pos.timestamp);
-        
-        document.getElementById('data').innerText = `${speedKts.toFixed(1)} KTS | ${heading.toFixed(0)}°`;
+        let effectiveHeading = magneticHeading;
+        if (speedKts > 1.0 && coords.heading !== null && !isNaN(coords.heading)) {
+          effectiveHeading = coords.heading;
+        }
+
+        const nmea = buildGPRMC(coords.latitude, coords.longitude, speedKts, effectiveHeading, pos.timestamp);
+        document.getElementById('data').innerText = `${speedKts.toFixed(1)} KTS | ${effectiveHeading.toFixed(0)}°`;
 
         if (rxChar) {
           const encoder = new TextEncoder();
